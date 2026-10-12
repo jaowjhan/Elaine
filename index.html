@@ -1,0 +1,162 @@
+-- ==========================================
+-- 1. ฟังก์ชันตรวจสอบสิทธิ์แอดมิน (is_admin)
+-- ==========================================
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+stable
+as $$
+  exists (
+    select 1
+    from public.admins
+    where user_id = auth.uid()
+  );
+$$;
+
+comment on function public.is_admin() is 'ฟังก์ชันตรวจสอบว่า User ปัจจุบันเป็น Admin หรือไม่';
+
+-- ==========================================
+-- 2. สร้างตาราง admins
+-- ==========================================
+create table if not exists public.admins (
+    id uuid default gen_random_uuid() primary key,
+    user_id uuid references auth.users(id) on delete cascade not null unique,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+comment on table public.admins is 'ตารางเก็บรายชื่อผู้ดูแลระบบ (Admin)';
+
+-- ==========================================
+-- 3. สร้างตาราง stores (ข้อมูลร้านค้า)
+-- ==========================================
+create table if not exists public.stores (
+    id uuid default gen_random_uuid() primary key,
+    name text not null,
+    description text,
+    address text,
+    image_url text,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+comment on table public.stores is 'ตารางเก็บข้อมูลร้านค้า';
+
+-- ==========================================
+-- 4. สร้างตาราง products (สินค้าในร้าน)
+-- ==========================================
+create table if not exists public.products (
+    id uuid default gen_random_uuid() primary key,
+    store_id uuid references public.stores(id) on delete cascade not null,
+    name text not null,
+    description text,
+    price numeric(10,2) not null default 0.00,
+    stock integer not null default 0,
+    image_url text,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+comment on table public.products is 'ตารางเก็บข้อมูลสินค้าของร้านค้า';
+
+-- ==========================================
+-- 5. Trigger สำหรับอัปเดต updated_at อัตโนมัติ
+-- ==========================================
+create or replace function public.handle_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+    new.updated_at = timezone('utc'::text, now());
+    return new;
+end;
+$$;
+
+drop trigger if exists on_stores_updated on public.stores;
+create trigger on_stores_updated
+    before update on public.stores
+    for each row
+    execute function public.handle_updated_at();
+
+drop trigger if exists on_products_updated on public.products;
+create trigger on_products_updated
+    before update on public.products
+    for each row
+    execute function public.handle_updated_at();
+
+-- ==========================================
+-- 6. เปิดใช้งาน RLS (Row Level Security)
+-- ==========================================
+alter table public.admins enable row level security;
+alter table public.stores enable row level security;
+alter table public.products enable row level security;
+
+-- ==========================================
+-- 7. กำหนด Policy สำหรับ admins
+-- ==========================================
+drop policy if exists "Admins can view admins list" on public.admins;
+create policy "Admins can view admins list"
+    on public.admins for select
+    to authenticated
+    using (public.is_admin());
+
+-- ==========================================
+-- 8. กำหนด Policy สำหรับ stores
+-- ==========================================
+drop policy if exists "Anyone can view stores" on public.stores;
+create policy "Anyone can view stores"
+    on public.stores for select
+    using (true);
+
+drop policy if exists "Admins can insert stores" on public.stores;
+create policy "Admins can insert stores"
+    on public.stores for insert
+    to authenticated
+    with check (public.is_admin());
+
+drop policy if exists "Admins can update stores" on public.stores;
+create policy "Admins can update stores"
+    on public.stores for update
+    to authenticated
+    using (public.is_admin())
+    with check (public.is_admin());
+
+drop policy if exists "Admins can delete stores" on public.stores;
+create policy "Admins can delete stores"
+    on public.stores for delete
+    to authenticated
+    using (public.is_admin());
+
+-- ==========================================
+-- 9. กำหนด Policy สำหรับ products
+-- ==========================================
+drop policy if exists "Anyone can view products" on public.products;
+create policy "Anyone can view products"
+    on public.products for select
+    using (true);
+
+drop policy if exists "Admins can insert products" on public.products;
+create policy "Admins can insert products"
+    on public.products for insert
+    to authenticated
+    with check (public.is_admin());
+
+drop policy if exists "Admins can update products" on public.products;
+create policy "Admins can update products"
+    on public.products for update
+    to authenticated
+    using (public.is_admin())
+    with check (public.is_admin());
+
+drop policy if exists "Admins can delete products" on public.products;
+create policy "Admins can delete products"
+    on public.products for delete
+    to authenticated
+    using (public.is_admin());
+
+-- ==========================================
+-- 10. ตั้งค่าเริ่มต้น: เพิ่มแอดมินตาม User ID ที่กำหนด
+-- ==========================================
+insert into public.admins (user_id)
+values ('79c59800-d0f2-4a99-92fc-4c1881b801e8')
+on conflict (user_id) do nothing;
